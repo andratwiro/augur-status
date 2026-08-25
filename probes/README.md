@@ -5,7 +5,7 @@ Three questions, asked from outside Cloudflare every three minutes:
 | Probe | What it does | The failure it exists for |
 |---|---|---|
 | `serving` | `GET /`, expects 200 and a fingerprint only a composed page contains | the worker is gone, DNS is wrong, Cloudflare is serving its own error page, the build shipped nothing |
-| `login` | `POST /__auth` with a dedicated **viewer** account, expects `303` + a `gv_user` cookie | the password store is unreachable — it fails closed, so everyone is locked out while the homepage still looks perfect |
+| `login` | `POST /__auth` with a dedicated **viewer** account, expects `303` + a session cookie named `__Host-augur_user` (⏳ the older `__Host-gv_user` is accepted too while instances take the rename; `T_<NAME>_COOKIE_NAME` overrides per target) | the password store is unreachable — it fails closed, so everyone is locked out while the homepage still looks perfect |
 | `publish` | the write path, in two lanes | publishing is broken and nobody notices until someone tries to ship |
 
 The third one is the one people skip, and it is the one that matters. A site can

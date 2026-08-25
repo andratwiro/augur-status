@@ -105,7 +105,21 @@ def targets():
             "login_pass": cfg(p + "LOGIN_PASS"),
             # Per target, because instances take an engine bump at their own pace and
             # two of them can legitimately disagree about the name mid-migration.
-            "cookie_name": cfg(p + "COOKIE_NAME", "__Host-gv_user"),
+            #
+            # A LIST, comma-separated, and the default holds every name a currently
+            # supported engine issues. That is what makes an engine rename a non-event
+            # here: the probe runs every 3 minutes and pages on two consecutive
+            # failures, so a single accepted name would make the ~1 minute between
+            # "probe updated" and "engine deployed" (in whichever order they land) a
+            # coin flip on waking someone up. Accepting the old name AND the new one
+            # spans the deploy with no red minutes at all, and still catches the thing
+            # worth catching: a cookie named something nobody shipped.
+            # ⏳ Drop a name from this default one week after the last instance issuing
+            # it has deployed an engine that no longer does — the same condition, and
+            # the same order, as LEGACY_USER_COOKIES in the engine's src/_worker.js.
+            # Pin a single name per target with T_<NAME>_COOKIE_NAME to assert harder.
+            "cookie_names": [n.strip() for n in cfg(
+                p + "COOKIE_NAME", "__Host-augur_user,__Host-gv_user").split(",") if n.strip()],
         })
     return out
 
@@ -237,17 +251,19 @@ def probe_login(t):
     # through the rename whether it had worked, silently failed, or half-landed: the
     # one change most able to break login was the one change this probe could not see.
     #
-    # The name is configuration because it is still moving (the engine reads both names
-    # during a migration window, so it can change again at no cost). The `__Host-`
-    # prefix is asserted separately and unconditionally: it is a security property, not
-    # a name. A browser refuses to store a `__Host-` cookie that carries a Domain
-    # attribute, which is what stops one workspace tossing a cookie at its neighbour on
-    # a shared apex — losing the prefix would reopen that quietly.
-    name = t.get("cookie_name") or "__Host-gv_user"
+    # The name is configuration because it is still moving (the engine reads several
+    # names during a migration window, so it can change again at no cost), and it is a
+    # SET rather than one string so a rename lands without a red minute — see
+    # cookie_names in targets(). The `__Host-` prefix is asserted separately and
+    # unconditionally: it is a security property, not a name. A browser refuses to store
+    # a `__Host-` cookie that carries a Domain attribute, which is what stops one
+    # workspace tossing a cookie at its neighbour on a shared apex — losing the prefix
+    # would reopen that quietly.
+    names = t.get("cookie_names") or ["__Host-augur_user"]
     issued = cookie.split("=", 1)[0].strip() if "=" in cookie else ""
-    if issued != name:
-        return False, "session cookie is %r, expected %r — set cookie_name if this was deliberate" % (
-            issued or "(none)", name), ms
+    if issued not in names:
+        return False, "session cookie is %r, expected one of %s — set cookie_name if this was deliberate" % (
+            issued or "(none)", ", ".join(names)), ms
     if not issued.startswith("__Host-"):
         return False, "session cookie %r lost its __Host- prefix — a sibling host can now shadow it" % issued, ms
     return True, "session issued as %s" % issued, ms
