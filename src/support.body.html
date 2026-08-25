@@ -1,0 +1,89 @@
+<h1>Getting help</h1>
+
+<p class="lede">One person maintains Augur. The numbers below are the ones that
+person can actually hit, not the ones that would look better on a pricing page.
+If a promise here is ever missed, it is a bug in the promise.</p>
+
+<h2>Where to write</h2>
+
+<table class="contacts">
+  <tbody>
+    <tr>
+      <th scope="row"><a href="mailto:hi@augur.works">hi@augur.works</a></th>
+      <td>Anything at all — questions, bugs, billing, "my publish is stuck".</td>
+    </tr>
+    <tr>
+      <th scope="row"><a href="mailto:abuse@augur.works">abuse@augur.works</a></th>
+      <td>Report content hosted on Augur that shouldn't be. Read by a human, not a filter.</td>
+    </tr>
+    <tr>
+      <th scope="row"><a href="mailto:legal@augur.works">legal@augur.works</a></th>
+      <td>Legal notices, data-protection requests, takedowns.</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>All three land in the same inbox. There is no ticket portal, no chat widget
+and no phone number.</p>
+
+<h2>How long you will wait</h2>
+
+<div class="tiers">
+  <section class="tier">
+    <h3>Free and open source</h3>
+    <p class="promise">No response time. Best effort.</p>
+    <p>Mail sent from a free workspace is read, and often answered the same
+    week — but nothing is promised, and some of it will never get a reply. That
+    is the honest trade for a product that costs nothing.</p>
+    <p>Two routes are usually faster than the inbox: open an issue on the
+    <a href="https://github.com/andratwiro/augur">public repository</a>, where
+    other people can see it and answer it, or fork the thing. Augur is MIT
+    licensed and self-hostable on your own Cloudflare account. Nobody can take
+    it away from you.</p>
+  </section>
+
+  <section class="tier tier-paid">
+    <h3>Paid workspaces</h3>
+    <p class="promise">First human reply within <strong>two business days</strong>.</p>
+    <p>Business days are Monday to Friday, Europe/Madrid, excluding Spanish
+    public holidays. Most mail is answered much sooner; two days is the number
+    that survives a bad week.</p>
+    <p>A reply means a person read it and told you what happens next. It does
+    not mean the problem is fixed — some fixes take longer than two days, and
+    you will be told which kind yours is.</p>
+  </section>
+</div>
+
+<h2>Abuse and legal notices</h2>
+
+<p>Acknowledged within <strong>two business days</strong>, and acted on without
+undue delay after that. Clearly illegal content is removed as soon as it is
+seen, at any hour. Everything else gets a decision and a reason.</p>
+
+<h2>During an outage</h2>
+
+<p>The <a href="./">status page</a> is the single place to look. It is hosted
+away from the machines that serve Augur, so it stays up when they do not.</p>
+
+<ul>
+  <li>It is updated within about an hour of the maintainer becoming aware of a
+  problem, and every few hours while the problem lasts.</li>
+  <li>There is no 24/7 on-call. Nights and weekends in Europe/Madrid are
+  covered by whether the phone alert wakes someone up, which it usually does,
+  and sometimes does not.</li>
+  <li>Every incident gets a short written account afterwards on the status
+  page: what broke, for how long, and what changed so it breaks less.</li>
+</ul>
+
+<h2>What is not offered</h2>
+
+<p>No SLA with credits attached. No guaranteed uptime percentage. No
+same-day phone support at any price. If you need those, Augur is the wrong tool
+and saying so now is cheaper for both of us than saying it during an incident.</p>
+
+<h2>Your data, if you leave or we do</h2>
+
+<p><code>augur export</code> walks the published content out of the store into
+a plain directory on your own disk, using only a publish token — no Cloudflare
+account, no cooperation from anyone. Run it whenever you like. It is the
+reason the answer to "what if you get bored of this" is boring.</p>

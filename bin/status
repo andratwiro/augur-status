@@ -1,0 +1,156 @@
+#!/usr/bin/env node
+// One command per thing you might need to say during an incident.
+// Every mutating command re-renders the page, commits and pushes, unless --no-push.
+//
+//   bin/status                                  what the page says right now
+//   bin/status set publish outage "R2 writes are failing"
+//   bin/status ok                               everything back to operational
+//   bin/status note "Investigating slow publishes"   |  bin/status note --clear
+//   bin/status open "Publishes are failing" --components publish,serving
+//   bin/status update "Cause found: expired R2 token"
+//   bin/status resolve "Token rotated, publishes confirmed working"
+//   bin/status render                           rebuild the HTML, change nothing else
+//
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { execFileSync } from "node:child_process";
+import { build, ROOT, STATES } from "../src/render.mjs";
+
+const FILE = join(ROOT, "status.json");
+const read = () => JSON.parse(readFileSync(FILE, "utf8"));
+const now = () => new Date().toISOString().replace(/\.\d+Z$/, "Z");
+
+const argv = process.argv.slice(2);
+const flags = new Set(argv.filter((a) => a.startsWith("--")));
+const opt = (name) => {
+  const i = argv.indexOf("--" + name);
+  return i >= 0 ? argv[i + 1] : null;
+};
+const words = argv.filter((a, i) => !a.startsWith("--") && !(i > 0 && argv[i - 1] === "--components"));
+const cmd = words[0] || "show";
+
+function die(msg) {
+  console.error(msg);
+  process.exit(1);
+}
+
+function save(status, message) {
+  status.updated = now();
+  writeFileSync(FILE, JSON.stringify(status, null, 2) + "\n");
+  build();
+  console.log(summary(status));
+  if (flags.has("--no-push")) {
+    console.log("\n(not pushed — --no-push)");
+    return;
+  }
+  const git = (...a) => execFileSync("git", a, { cwd: ROOT, stdio: ["ignore", "pipe", "inherit"] }).toString().trim();
+  git("add", "status.json", "docs");
+  const dirty = git("status", "--porcelain", "--", "status.json", "docs");
+  if (!dirty) {
+    console.log("\nnothing changed.");
+    return;
+  }
+  git("commit", "-m", message);
+  try {
+    git("push");
+    console.log("\npushed. live in under a minute at the URL in README.md");
+  } catch (e) {
+    console.error("\nPUSH FAILED — the page on GitHub is still the old one. Retry: git -C " + ROOT + " push");
+    process.exit(1);
+  }
+}
+
+function summary(s) {
+  const open = (s.incidents || []).filter((i) => i.state !== "resolved");
+  const lines = s.components.map((c) => {
+    const st = STATES[c.state] || STATES.operational;
+    const mark = c.state === "operational" ? "  ok " : " !! ";
+    return `${mark} ${c.id.padEnd(9)} ${st.label}${c.detail ? " — " + c.detail : ""}`;
+  });
+  return [
+    `updated ${s.updated}`,
+    ...lines,
+    s.note ? `  note      ${s.note}` : null,
+    open.length ? `  incident  ${open[0].title}` : null,
+  ].filter(Boolean).join("\n");
+}
+
+const status = read();
+const openIncident = () => (status.incidents || []).find((i) => i.state !== "resolved");
+
+switch (cmd) {
+  case "show":
+    console.log(summary(status));
+    break;
+
+  case "render":
+    build();
+    console.log("rendered.");
+    break;
+
+  case "set": {
+    const [, id, state, ...rest] = words;
+    const c = status.components.find((x) => x.id === id);
+    if (!c) die(`unknown component "${id}". Known: ${status.components.map((x) => x.id).join(", ")}`);
+    if (!STATES[state]) die(`unknown state "${state}". Known: ${Object.keys(STATES).join(", ")}`);
+    c.state = state;
+    c.detail = rest.join(" ");
+    save(status, `status: ${id} → ${state}`);
+    break;
+  }
+
+  case "ok":
+    for (const c of status.components) { c.state = "operational"; c.detail = ""; }
+    status.note = "";
+    save(status, "status: all operational");
+    break;
+
+  case "note":
+    status.note = flags.has("--clear") ? "" : words.slice(1).join(" ");
+    save(status, status.note ? "status: note" : "status: clear note");
+    break;
+
+  case "open": {
+    if (openIncident()) die("an incident is already open — use `update` or `resolve` first.");
+    const title = words.slice(1).join(" ");
+    if (!title) die('usage: bin/status open "Short title" [--components publish,serving]');
+    const comps = (opt("components") || "").split(",").map((s) => s.trim()).filter(Boolean);
+    status.incidents.unshift({
+      title, state: "open", started: now(), resolved: null,
+      components: comps,
+      updates: [{ at: now(), text: "Investigating." }],
+    });
+    save(status, `status: incident opened — ${title}`);
+    break;
+  }
+
+  case "update": {
+    const inc = openIncident();
+    if (!inc) die("no open incident. `bin/status open \"…\"` first.");
+    const text = words.slice(1).join(" ");
+    if (!text) die('usage: bin/status update "what you now know"');
+    inc.updates.push({ at: now(), text });
+    save(status, "status: incident update");
+    break;
+  }
+
+  case "resolve": {
+    const inc = openIncident();
+    if (!inc) die("no open incident.");
+    const text = words.slice(1).join(" ") || "Resolved.";
+    inc.updates.push({ at: now(), text });
+    inc.state = "resolved";
+    inc.resolved = now();
+    for (const id of inc.components || []) {
+      const c = status.components.find((x) => x.id === id);
+      if (c) { c.state = "operational"; c.detail = ""; }
+    }
+    status.note = "";
+    save(status, `status: resolved — ${inc.title}`);
+    break;
+  }
+
+  default:
+    console.log(readFileSync(new URL(import.meta.url), "utf8").split("\n").slice(1, 15).join("\n").replace(/^\/\/ ?/gm, ""));
+    process.exit(1);
+}

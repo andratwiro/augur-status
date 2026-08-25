@@ -1,0 +1,35 @@
+{
+  "updated": "2026-08-25T18:10:00Z",
+  "note": "",
+  "components": [
+    {
+      "id": "serving",
+      "name": "Serving prototypes",
+      "blurb": "Published pages load for the people you shared them with.",
+      "state": "operational",
+      "detail": ""
+    },
+    {
+      "id": "login",
+      "name": "Signing in",
+      "blurb": "The gate in front of a workspace accepts a password and issues a session.",
+      "state": "operational",
+      "detail": ""
+    },
+    {
+      "id": "publish",
+      "name": "Publishing",
+      "blurb": "`augur ship` and `augur publish` put new bytes at a live URL.",
+      "state": "operational",
+      "detail": ""
+    },
+    {
+      "id": "canvas",
+      "name": "Canvas multiplayer",
+      "blurb": "Live cursors and shared editing on the infinite canvas.",
+      "state": "operational",
+      "detail": ""
+    }
+  ],
+  "incidents": []
+}
