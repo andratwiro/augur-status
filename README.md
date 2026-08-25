@@ -65,9 +65,12 @@ src/render.mjs           status.json -> docs/*.html, everything inlined
 src/support.body.html    the response-time commitments, as prose
 bin/status               the one command
 docs/                    what GitHub Pages serves (generated — do not hand-edit)
-probes/augur-probe.py    synthetic probes: serving, login, publish
+probes/augur-probe.py    synthetic probes: serving, login, publish, deploy health
 probes/inbox-watch.py    support mail -> the maintainer's phone
 ops/cf-alerts.mjs        Cloudflare notification policies, as code
+ops/kv-backup.mjs        binary-safe KV export, rotated, off GitHub
+ops/store-backup.mjs     bundle-store copy, shared blob pool, off GitHub
+ops/run-backups.sh       the nightly run, one .env per instance
 ```
 
 `docs/status.json` is a machine-readable mirror of the page, so a probe or a
@@ -82,6 +85,23 @@ itself. Fast, free, and blind to anything Cloudflare thinks is fine.
 Cloudflare does not run, over a channel Cloudflare does not own. They ask the
 three questions a dashboard cannot: does it serve, can you sign in, can you
 publish.
+
+A fourth, slower lane asks the question none of those can: **is this instance
+still being kept current?** A site whose deploy machinery has stopped serves
+perfectly — that is the whole problem — so the lane watches for a working-tree
+publish left standing, baked chrome older than the deployed engine, an engine pin
+falling behind the public main, and free-tier quota burn heading for a cap. It is
+opt-in per instance and never colours a component on the page: a stale pin is not
+an outage, and a status page that says otherwise is one people learn to
+disbelieve. The engine-staleness check is the only one that re-notifies weekly
+instead of alerting once, because an outage gets fixed and a slow rot gets
+forgotten.
+
+**Backups** (`ops/`) are the fourth layer, and the one whose absence is silent by
+construction. Each deploy shell has a `kv-backup.yml` and a `store-backup.yml`; an
+org whose GitHub Actions billing lapses has neither, and nothing anywhere says so.
+`ops/run-backups.sh` takes both copies from cron on the same box as the probes,
+with no CI in the path. See `ops/README.md`.
 
 **This page** is what a user sees. It is written by hand on purpose: an
 automated status page reports what the monitoring understood, and the gap

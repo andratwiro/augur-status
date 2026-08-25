@@ -7,6 +7,7 @@ take down the thing watching for it. Stdlib only — no venv to rot.
     augur-probe.py                run every probe due right now
     augur-probe.py --report       run everything, alert nothing, print the table
     augur-probe.py --commit       force the slow-lane publish commit this run
+    augur-probe.py --health       force the slow-lane deploy-health checks this run
     augur-probe.py --test-alert   prove the phone alert works
 
 Three probes, because two of them lie by omission:
@@ -35,9 +36,44 @@ same instant the store refuses the probe (409 stale-base) rather than the probe
 overwriting a person. A raced probe is a PASS, not a failure — nothing was lost,
 which is the whole point of the check.
 
+── AND A FOURTH LANE: DEPLOY HEALTH (opt-in, per target, every 6h) ──────────────
+
+The three above answer "is it working right now". They cannot see the failures
+that are silent by nature — a site that serves perfectly while the thing that
+keeps it current has stopped. Those used to be a GitHub Actions canary
+(health.yml) in each instance's deploy shell; an instance whose Actions cannot
+run has no canary at all, which is how two dead backups went unnoticed for days.
+
+  dirty-publish   /_build.json says a space is serving a working-tree publish and
+                  has been for longer than the grace window. Those exact bytes
+                  exist in NO repository — they cannot be reviewed or rebuilt.
+
+  chrome-drift    a space's baked chrome (builtWithEngine) is older than the
+                  deployed engine, past the re-bake window. The re-bake was missed.
+
+  engine-stale    the pinned engine is N commits behind the public engine's main,
+                  past a per-target allowance. THIS IS THE ONE THAT NAGS: an
+                  outage alerts once and gets fixed, but a pin that stopped moving
+                  is a slow rot nobody is paged for, so it re-notifies weekly
+                  until it is either fixed or the allowance is widened on purpose.
+
+  quota           free-tier daily burn vs every cap this stack can hit: KV reads
+                  (100k/day), KV writes (1k/day — the tightest ratio at normal
+                  usage), Pages Function invocations (100k/day) and Durable Object
+                  requests (100k/day). Past a cap it is a hard degrade for the rest
+                  of the UTC day: logins show the reset notice, boards go
+                  read-only, routes error, canvas rooms drop. Warn well below, so
+                  a new burner is found while there are still hours to find it.
+
+Every one of these is OFF unless that target configures it, so adding the lane
+changes nothing for a target that does not ask for it. They report separately from
+the three core probes and never colour the public status page's components — a
+stale pin is not an outage, and saying it is would train people to ignore the page.
+
 Config: /etc/augur-probes.env (see augur-probes.env.example). Never in git.
 """
 
+import calendar
 import hashlib
 import json
 import os
@@ -58,8 +94,21 @@ TIMEOUT = 25
 FAILS_BEFORE_ALERT = 2          # one blip is weather; two in a row is a problem
 PROBE_BLOB = b"augur uptime probe\n"   # constant on purpose: one object, forever
 
+# The three probes the public status page speaks in. Anything else — the deploy
+# health lane below — is reported and alerted but never rolled into a component:
+# a pin that has stopped moving is not an outage, and a status page that says it is
+# teaches people to ignore it.
+CORE_PROBES = ("serving", "login", "publish", "publish-commit")
+
+# A failure alerts once and then stays quiet until it recovers, which is right for
+# an outage: somebody is already on it. It is wrong for a slow rot — an engine pin
+# that stopped moving is still wrong next Tuesday and nobody was reminded. These
+# probes re-notify on the interval instead of latching.
+RENOTIFY_HOURS = {"engine-stale": 168}   # weekly
+
 REPORT = "--report" in sys.argv
 FORCE_COMMIT = "--commit" in sys.argv
+FORCE_HEALTH = "--health" in sys.argv
 
 
 # ---------------------------------------------------------------- config
@@ -120,6 +169,29 @@ def targets():
             # Pin a single name per target with T_<NAME>_COOKIE_NAME to assert harder.
             "cookie_names": [n.strip() for n in cfg(
                 p + "COOKIE_NAME", "__Host-augur_user,__Host-gv_user").split(",") if n.strip()],
+
+            # ── the publish COMMIT lane, per target ──────────────────────────────
+            # On by default: it is the only check that proves the whole write path.
+            # Turn it off (T_<NAME>_COMMIT=0) for an instance where a person is
+            # publishing constantly and an hourly version bump attributed to a probe
+            # would be noise in THEIR history. The fast lane still exercises R2 reads
+            # and writes every three minutes, so turning this off costs the CAS /
+            # composition / cache-purge coverage, not the store coverage.
+            "commit": cfg(p + "COMMIT", "1") not in ("0", "no", "false", ""),
+
+            # ── deploy health lane, all opt-in ───────────────────────────────────
+            # Grace windows in seconds; a value of 0 disables that check entirely.
+            "dirty_grace": int(cfg(p + "DIRTY_GRACE_SECONDS", "0") or 0),
+            "rebake_grace": int(cfg(p + "REBAKE_GRACE_SECONDS", "0") or 0),
+            # The PUBLIC engine repo and how far behind main this instance may sit.
+            # 0 = do not check. An instance that takes engine bumps weekly should say
+            # so with a generous number rather than by being unmonitored.
+            "engine_repo": cfg(p + "ENGINE_REPO", "andratwiro/augur"),
+            "engine_max_behind": int(cfg(p + "ENGINE_MAX_BEHIND", "0") or 0),
+            # Cloudflare account analytics. Needs Account Analytics:Read; the token is
+            # read-only against usage counters and cannot change anything.
+            "cf_token": cfg(p + "CF_TOKEN"),
+            "cf_account": cfg(p + "CF_ACCOUNT"),
         })
     return out
 
@@ -351,6 +423,163 @@ def probe_publish_commit(t):
     return False, "committed v%d but /_build.json never caught up in 20s" % got, None
 
 
+# ------------------------------------------------- deploy health (slow lane)
+
+def _stamp(t):
+    """The public build stamp, cache-busted. No credential needed."""
+    code, body, _, _ = http("GET", "%s/_build.json?t=%d" % (t["origin"], time.time()))
+    if code != 200:
+        raise ValueError("/_build.json → HTTP %d" % code)
+    return as_json(body, "/_build.json")
+
+
+def _age(iso):
+    """Seconds since an ISO stamp; a missing or unparseable one reads as ancient,
+    never as an exception — a bad date must not take the rest of the lane down."""
+    if not iso:
+        return 10 ** 9
+    try:
+        # timegm, not mktime: the stamp is UTC and mktime would read it as local,
+        # which silently shifts every age by the box's offset and by DST.
+        return max(0, int(time.time() - calendar.timegm(time.strptime(iso[:19], "%Y-%m-%dT%H:%M:%S"))))
+    except Exception:
+        return 10 ** 9
+
+
+def probe_dirty_publish(t):
+    """Live content built from an uncommitted working tree, left standing.
+
+    Fine for an hour of hands-on work — those bytes exist in no repository, so once
+    the session ends nobody can review, rebuild or roll forward from them."""
+    grace = t.get("dirty_grace") or 0
+    if not grace:
+        return None, "not configured (set DIRTY_GRACE_SECONDS)", None
+    stamp = _stamp(t)
+    bad = []
+    for sid, s in (stamp.get("spaces") or {}).items():
+        if not s.get("dirty"):
+            continue
+        age = _age(s.get("publishedAt"))
+        if age > grace:
+            bad.append("%s has been serving a working-tree publish for %dh (base %s) — those exact "
+                       "bytes exist in NO repository" % (sid, age // 3600, (s.get("sha") or "?")[:12]))
+    if bad:
+        return False, "; ".join(bad), None
+    return True, "no dirty publish past its window", None
+
+
+def probe_chrome_drift(t):
+    """A space's baked chrome older than the deployed engine, past the re-bake window.
+
+    Page-level chrome is baked at publish time, so an engine bump leaves a space on
+    the old chrome until something republishes it. Runtime chrome hides this at serve
+    time for marker-era pages; baked generated markup does not catch up on its own."""
+    grace = t.get("rebake_grace") or 0
+    if not grace:
+        return None, "not configured (set REBAKE_GRACE_SECONDS)", None
+    stamp = _stamp(t)
+    eng = (stamp.get("engine") or {}).get("sha") or ""
+    if not eng:
+        return None, "stamp carries no engine.sha", None
+    eng_age = _age((stamp.get("engine") or {}).get("publishedAt"))
+    if eng_age <= grace:
+        return True, "engine deployed %dh ago — inside the re-bake window" % (eng_age // 3600), None
+    bad = []
+    for sid, s in (stamp.get("spaces") or {}).items():
+        bw = s.get("builtWithEngine") or ""
+        if bw == eng or s.get("dirty"):
+            continue
+        bad.append("%s serves baked chrome %s but the engine is %s (deployed %dh ago)"
+                   % (sid, (bw or "<none>")[:12], eng[:12], eng_age // 3600))
+    if bad:
+        return False, "; ".join(bad) + " — the re-bake was missed", None
+    return True, "all baked chrome matches engine %s" % eng[:12], None
+
+
+def probe_engine_stale(t):
+    """How far the pinned engine is behind the PUBLIC engine's main.
+
+    An instance whose pin moves by CI stops moving the moment CI stops, and nothing
+    about the running site looks different. Unauthenticated GitHub compare — the
+    engine repo is public, so this needs no credential on this box."""
+    allowed = t.get("engine_max_behind") or 0
+    if not allowed:
+        return None, "not configured (set ENGINE_MAX_BEHIND)", None
+    stamp = _stamp(t)
+    live = (stamp.get("engine") or {}).get("sha") or ""
+    if not live:
+        return None, "stamp carries no engine.sha", None
+    url = "https://api.github.com/repos/%s/compare/%s...main" % (t["engine_repo"], live)
+    code, body, _, _ = http("GET", url, headers={"Accept": "application/vnd.github+json"})
+    if code == 403:
+        # Unauthenticated rate limit. Not knowing is not the same as being current,
+        # but it is also not an alert worth waking anyone for.
+        return None, "GitHub rate-limited the compare (no token needed, just try later)", None
+    if code == 404:
+        return False, ("%s does not contain the pinned engine sha %s — the pin points at a commit "
+                       "the public repo cannot see" % (t["engine_repo"], live[:12])), None
+    if code != 200:
+        return None, "compare → HTTP %d" % code, None
+    cmp_ = as_json(body, "compare")
+    behind = cmp_.get("ahead_by") or 0     # commits main is ahead of the pin
+    if behind <= allowed:
+        return True, "engine pin %s is %d commit(s) behind main (allowance %d)" % (live[:12], behind, allowed), None
+    return False, ("engine pin %s is %d commits behind %s main (allowance %d) — the pin is not moving "
+                   "on its own; deploy it by hand or fix whatever bumps it"
+                   % (live[:12], behind, t["engine_repo"], allowed)), None
+
+
+# Free-tier daily caps, and what actually breaks at each one. The warn lines sit
+# well below so a NEW burner is found while there are hours left in the UTC day.
+QUOTA_CAPS = [
+    ("KV reads",             "reads",  60000, 100000, "logins show the reset notice and boards go read-only"),
+    ("KV writes",            "writes",   500,   1000, "publishes, overlay edits and invites fail"),
+    ("Function invocations", "fns",    60000, 100000, "worker routes error out"),
+    ("DO requests",          "dos",    60000, 100000, "canvas realtime rooms drop"),
+]
+
+
+def probe_quota(t):
+    """Free-tier daily burn, account-wide, against every cap this stack can hit."""
+    tok, acct = t.get("cf_token"), t.get("cf_account")
+    if not (tok and acct):
+        return None, "not configured (set CF_TOKEN + CF_ACCOUNT)", None
+    today = time.strftime("%Y-%m-%d", time.gmtime())
+    query = ('query { viewer { accounts(filter: {accountTag: "%s"}) {'
+             ' kv: kvOperationsAdaptiveGroups(limit: 10, filter: {date: "%s"})'
+             ' { dimensions { actionType } sum { requests } }'
+             ' fns: pagesFunctionsInvocationsAdaptiveGroups(limit: 10, filter: {date: "%s"}) { sum { requests } }'
+             ' dos: durableObjectsInvocationsAdaptiveGroups(limit: 10, filter: {date: "%s"}) { sum { requests } }'
+             ' } } }' % (acct, today, today, today))
+    code, body, _, _ = http("POST", "https://api.cloudflare.com/client/v4/graphql",
+                            headers={"Authorization": "Bearer " + tok, "Content-Type": "application/json"},
+                            data=json.dumps({"query": query}).encode())
+    if code != 200:
+        return False, "Cloudflare GraphQL → HTTP %d — quota burn is UNMONITORED" % code, None
+    j = as_json(body, "graphql")
+    try:
+        acc = j["data"]["viewer"]["accounts"][0]
+    except Exception:
+        return False, ("Cloudflare analytics query returned no account (token missing Account "
+                       "Analytics:Read?) — quota burn is UNMONITORED"), None
+    kv = acc.get("kv") or []
+    got = {
+        "reads":  sum(g["sum"]["requests"] for g in kv if g.get("dimensions", {}).get("actionType") == "read"),
+        "writes": sum(g["sum"]["requests"] for g in kv if g.get("dimensions", {}).get("actionType") == "write"),
+        "fns":    sum(g["sum"]["requests"] for g in (acc.get("fns") or [])),
+        "dos":    sum(g["sum"]["requests"] for g in (acc.get("dos") or [])),
+    }
+    hot = []
+    for label, key, warn, cap, consequence in QUOTA_CAPS:
+        if got[key] > warn:
+            hot.append("%s at %d/%d today (UTC) — past the %d warn line; at the cap %s for the rest of "
+                       "the day" % (label, got[key], cap, warn, consequence))
+    summary = ", ".join("%s %d" % (l, got[k]) for l, k, _, _, _ in QUOTA_CAPS)
+    if hot:
+        return False, "; ".join(hot), None
+    return True, summary, None
+
+
 # ---------------------------------------------------------------- run
 
 def main():
@@ -373,6 +602,12 @@ def main():
     # It only runs under --report if you ask for it by name.
     do_commit = FORCE_COMMIT or (due and not REPORT)
 
+    # The health lane is read-only, so --report may run it freely. It is slow (a
+    # GitHub compare + a Cloudflare GraphQL round trip per target) and answers a
+    # question that changes on the scale of hours, not minutes.
+    health_every = int(cfg("HEALTH_EVERY_MIN", "360") or 360)
+    do_health = FORCE_HEALTH or REPORT or (time.time() - state.get("_last_health", 0)) >= health_every * 60
+
     results = {}
     problems = []
     recoveries = []
@@ -388,8 +623,13 @@ def main():
     for t in targets():
         checks = [("serving", safe(probe_serving, t)), ("login", safe(probe_login, t)),
                   ("publish", safe(probe_publish_fast, t))]
-        if do_commit:
+        if do_commit and t.get("commit"):
             checks.append(("publish-commit", safe(probe_publish_commit, t)))
+        if do_health:
+            checks += [("dirty-publish", safe(probe_dirty_publish, t)),
+                       ("chrome-drift", safe(probe_chrome_drift, t)),
+                       ("engine-stale", safe(probe_engine_stale, t)),
+                       ("quota", safe(probe_quota, t))]
         results[t["name"]] = {}
         for probe, (ok, detail, ms) in checks:
             results[t["name"]][probe] = {
@@ -404,18 +644,33 @@ def main():
                 state[key] = {"fails": 0, "alerted": False}
             else:
                 rec["fails"] = rec.get("fails", 0) + 1
-                if rec["fails"] >= FAILS_BEFORE_ALERT and not rec.get("alerted"):
+                # The slow lane runs every 6h, so "two consecutive failures" would be
+                # half a day of silence. These checks measure a state, not a blip —
+                # a stale pin is stale on the first look — so they alert immediately.
+                threshold = 1 if probe not in CORE_PROBES else FAILS_BEFORE_ALERT
+                renotify = RENOTIFY_HOURS.get(probe, 0) * 3600
+                stale_alert = renotify and (time.time() - rec.get("alerted_at", 0)) >= renotify
+                if rec["fails"] >= threshold and (not rec.get("alerted") or stale_alert):
                     problems.append("%s FAILING (%dx) — %s" % (key, rec["fails"], detail))
                     rec["alerted"] = True
+                    rec["alerted_at"] = time.time()
                 state[key] = rec
 
     if do_commit and not REPORT:
         state["_last_commit"] = time.time()
+    if do_health and not REPORT:
+        state["_last_health"] = time.time()
 
-    # Roll the per-probe truth up into the four things the status page names.
+    # Roll the per-probe truth up into the four things the status page names. ONLY
+    # the core probes: the deploy health lane answers "is this instance being kept
+    # current", which is an operator's question, not a user's. A stale engine pin on
+    # a site that serves, logs in and publishes perfectly is not an outage, and a
+    # status page that calls it one is a status page people learn to disbelieve.
     components = {}
     for tname, probes in results.items():
         for probe, r in probes.items():
+            if probe not in CORE_PROBES:
+                continue
             comp = "publish" if probe.startswith("publish") else probe
             if r["ok"] is False:
                 components[comp] = "outage"
