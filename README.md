@@ -65,12 +65,41 @@ src/render.mjs           status.json -> docs/*.html, everything inlined
 src/support.body.html    the response-time commitments, as prose
 bin/status               the one command
 docs/                    what GitHub Pages serves (generated — do not hand-edit)
-probes/                  synthetic probes: serving, login, publish  (runs on the homelab)
-ops/                     Cloudflare notification policies, as code
+probes/augur-probe.py    synthetic probes: serving, login, publish
+probes/inbox-watch.py    support mail -> the maintainer's phone
+ops/cf-alerts.mjs        Cloudflare notification policies, as code
 ```
 
 `docs/status.json` is a machine-readable mirror of the page, so a probe or a
 script can read the same truth the humans read.
+
+## The three layers, and why none of them replaces another
+
+**Cloudflare's own notifications** (`ops/`) are the platform telling you about
+itself. Fast, free, and blind to anything Cloudflare thinks is fine.
+
+**Synthetic probes** (`probes/`) are somebody else checking, from a machine
+Cloudflare does not run, over a channel Cloudflare does not own. They ask the
+three questions a dashboard cannot: does it serve, can you sign in, can you
+publish.
+
+**This page** is what a user sees. It is written by hand on purpose: an
+automated status page reports what the monitoring understood, and the gap
+between that and what is actually happening is where trust is lost.
+
+The seam between the second and the third is `/var/lib/augur-probes/status.json`
+on the probe host, which already carries the four component states in this page's
+vocabulary. Wiring it up needs a GitHub token on that host and a call to
+`bin/status set`; until then, a phone alert wakes a person and the person types
+the truth.
+
+## The support inbox
+
+`hi@augur.works` is the mailbox; `abuse@` and `legal@` alias onto it.
+`probes/inbox-watch.py` polls it and pushes new mail to the maintainer's phone,
+then nudges once a day if anything sits unread past a threshold. A published
+response time is only worth the notification behind it — the commitments on
+`docs/support.html` assume that notification exists.
 
 ## The drill
 
