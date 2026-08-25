@@ -1,5 +1,5 @@
 {
-  "updated": "2026-08-25T18:20:13Z",
+  "updated": "2026-08-25T18:20:58Z",
   "note": "",
   "components": [
     {
@@ -20,8 +20,8 @@
       "id": "publish",
       "name": "Publishing",
       "blurb": "`augur ship` and `augur publish` put new bytes at a live URL.",
-      "state": "degraded",
-      "detail": "Drill only — proving the page can be flipped while Cloudflare is unreachable."
+      "state": "operational",
+      "detail": ""
     },
     {
       "id": "canvas",
