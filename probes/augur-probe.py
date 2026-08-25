@@ -103,6 +103,9 @@ def targets():
             "token": cfg(p + "TOKEN"),
             "login_email": cfg(p + "LOGIN_EMAIL"),
             "login_pass": cfg(p + "LOGIN_PASS"),
+            # Per target, because instances take an engine bump at their own pace and
+            # two of them can legitimately disagree about the name mid-migration.
+            "cookie_name": cfg(p + "COOKIE_NAME", "__Host-gv_user"),
         })
     return out
 
@@ -222,11 +225,32 @@ def probe_login(t):
     except Exception as e:
         return False, "unreachable: %s" % e, None
     cookie = headers.get("Set-Cookie", "")
-    if code == 303 and "gv_user=" in cookie:
-        return True, "session issued", ms
     if code == 429:
         return None, "rate limited by the gate (not a failure)", ms
-    return False, "HTTP %d, no session cookie — the password store may be unreachable" % code, ms
+    if code != 303:
+        return False, "HTTP %d, no session cookie — the password store may be unreachable" % code, ms
+
+    # Assert the cookie's name EXACTLY, not as a substring.
+    #
+    # This read `"gv_user=" in cookie`, which cannot tell `gv_user` from
+    # `__Host-gv_user` — the second contains the first. So the probe reported green
+    # through the rename whether it had worked, silently failed, or half-landed: the
+    # one change most able to break login was the one change this probe could not see.
+    #
+    # The name is configuration because it is still moving (the engine reads both names
+    # during a migration window, so it can change again at no cost). The `__Host-`
+    # prefix is asserted separately and unconditionally: it is a security property, not
+    # a name. A browser refuses to store a `__Host-` cookie that carries a Domain
+    # attribute, which is what stops one workspace tossing a cookie at its neighbour on
+    # a shared apex — losing the prefix would reopen that quietly.
+    name = t.get("cookie_name") or "__Host-gv_user"
+    issued = cookie.split("=", 1)[0].strip() if "=" in cookie else ""
+    if issued != name:
+        return False, "session cookie is %r, expected %r — set cookie_name if this was deliberate" % (
+            issued or "(none)", name), ms
+    if not issued.startswith("__Host-"):
+        return False, "session cookie %r lost its __Host- prefix — a sibling host can now shadow it" % issued, ms
+    return True, "session issued as %s" % issued, ms
 
 
 def probe_publish_fast(t):
