@@ -1,5 +1,5 @@
 {
-  "updated": "2026-08-25T18:20:58Z",
+  "updated": "2026-08-27T17:59:43Z",
   "note": "",
   "components": [
     {
@@ -20,8 +20,8 @@
       "id": "publish",
       "name": "Publishing",
       "blurb": "`augur ship` and `augur publish` put new bytes at a live URL.",
-      "state": "operational",
-      "detail": ""
+      "state": "degraded",
+      "detail": "Intermittent errors on the publish API. Most publishes land, a failed one succeeds on retry. Published sites serve normally."
     },
     {
       "id": "canvas",
@@ -31,5 +31,21 @@
       "detail": ""
     }
   ],
-  "incidents": []
+  "incidents": [
+    {
+      "title": "Publishes intermittently return an error",
+      "state": "open",
+      "started": "2026-08-27T17:59:43Z",
+      "resolved": null,
+      "components": [
+        "publish"
+      ],
+      "updates": [
+        {
+          "at": "2026-08-27T17:59:43Z",
+          "text": "Investigating."
+        }
+      ]
+    }
+  ]
 }

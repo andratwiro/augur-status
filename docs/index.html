@@ -125,11 +125,11 @@ footer a{color:var(--muted)}
 <nav><a href="./support.html">Getting help</a></nav>
 </header>
 <main>
-<section class="banner ok">
+<section class="banner warn">
   <span class="dot"></span>
   <div>
-    <h1>All systems operational</h1>
-    <div class="when">Checked and written by hand · 2026-08-25 18:20 UTC</div>
+    <h1>Some things are slower than they should be</h1>
+    <div class="when">Checked and written by hand · 2026-08-27 17:59 UTC</div>
     
   </div>
 </section>
@@ -156,9 +156,9 @@ footer a{color:var(--muted)}
     <div class="left">
       <div class="name">Publishing</div>
       <div class="blurb"><code>augur ship</code> and <code>augur publish</code> put new bytes at a live URL.</div>
-      
+      <div class="detail">Intermittent errors on the publish API. Most publishes land, a failed one succeeds on retry. Published sites serve normally.</div>
     </div>
-    <span class="pill ok">Operational</span>
+    <span class="pill warn">Degraded</span>
   </div>
   <div class="row">
     <div class="left">
@@ -170,9 +170,15 @@ footer a{color:var(--muted)}
   </div>
 </div>
 
-<h2 class="sec">Incidents</h2>
+<h2 class="sec">Open incident</h2>
+  <article class="incident">
+    <h3>Publishes intermittently return an error</h3>
+    <div class="meta">Started 2026-08-27 17:59 UTC — ongoing · publish</div>
+    <ul>
+      <li><time>2026-08-27 17:59 UTC</time>Investigating.</li>
+    </ul>
+  </article>
 
-<p class="quiet">Nothing open right now.</p>
 
 
 
