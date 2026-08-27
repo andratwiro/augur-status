@@ -176,6 +176,7 @@ footer a{color:var(--muted)}
     <div class="meta">Started 2026-08-27 17:59 UTC — ongoing · publish</div>
     <ul>
       <li><time>2026-08-27 17:59 UTC</time>Investigating.</li>
+      <li><time>2026-08-27 17:59 UTC</time>Cause found: bursts of rapid publishes make the worker reload the space manifest often enough to trip its CPU limit, so a request caught mid-reload gets a 503. Retries go through and served sites are unaffected. The automatic platform re-bake behind publishes is also paused by a CI billing issue, which we are chasing separately.</li>
     </ul>
   </article>
 

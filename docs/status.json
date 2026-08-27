@@ -1,5 +1,5 @@
 {
-  "updated": "2026-08-27T17:59:43Z",
+  "updated": "2026-08-27T17:59:52Z",
   "note": "",
   "components": [
     {
@@ -44,6 +44,10 @@
         {
           "at": "2026-08-27T17:59:43Z",
           "text": "Investigating."
+        },
+        {
+          "at": "2026-08-27T17:59:52Z",
+          "text": "Cause found: bursts of rapid publishes make the worker reload the space manifest often enough to trip its CPU limit, so a request caught mid-reload gets a 503. Retries go through and served sites are unaffected. The automatic platform re-bake behind publishes is also paused by a CI billing issue, which we are chasing separately."
         }
       ]
     }
