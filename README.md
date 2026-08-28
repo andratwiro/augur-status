@@ -71,6 +71,7 @@ ops/cf-alerts.mjs        Cloudflare notification policies, as code
 ops/kv-backup.mjs        binary-safe KV export, rotated, off GitHub
 ops/store-backup.mjs     bundle-store copy, shared blob pool, off GitHub
 ops/run-backups.sh       the nightly run, one .env per instance
+ops/offsite/             the same copies to object-locked storage, plus the restore drill
 ```
 
 `docs/status.json` is a machine-readable mirror of the page, so a probe or a
@@ -101,7 +102,17 @@ forgotten.
 construction. Each deploy shell has a `kv-backup.yml` and a `store-backup.yml`; an
 org whose GitHub Actions billing lapses has neither, and nothing anywhere says so.
 `ops/run-backups.sh` takes both copies from cron on the same box as the probes,
-with no CI in the path. See `ops/README.md`.
+with no CI in the path — and `ops/offsite/` takes a third, to a bucket with Object
+Lock, where last night's copy cannot be deleted tonight by anything holding today's
+credentials. A backup that lives where the primary lives is accident cover, not
+attack cover, and ransomware is the threat model.
+
+The part that is easy to skip is the one that matters: `ops/offsite/restore-drill.mjs`
+puts a copy back on a throwaway namespace and asserts the result byte for byte,
+having first destroyed and overwritten what it is about to restore — because a
+restore nobody has executed is not a rollback, and a drill that does not break
+something first cannot tell a perfect restore from a restore that did nothing. See
+`ops/README.md` and `ops/offsite/README.md`.
 
 **This page** is what a user sees. It is written by hand on purpose: an
 automated status page reports what the monitoring understood, and the gap

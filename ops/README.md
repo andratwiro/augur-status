@@ -139,7 +139,17 @@ surviving manifest.
 ## What this is not
 
 Off-site. Everything lands on one machine. That survives Cloudflare losing a
-namespace or a bucket and does not survive losing the machine. Plan item **D-2**
-— one nightly copy to versioned, object-locked storage where last night's copy
-cannot be deleted tonight by anything holding today's credentials — is the real
-answer, and this is the interim that stops the bleeding until the bucket exists.
+namespace or a bucket and does not survive losing the machine.
+
+**That half now exists: [`offsite/`](offsite/README.md).** One copy per workspace to a
+Scaleway bucket with Object Lock and versioning, where last night's copy cannot be
+deleted tonight by anything holding today's credentials — `offsite/run.sh`, nightly at
+03:50 UTC, reading the same `/etc/augur-backups.d/*.env` files these two do. An instance
+whose file names no `BACKUP_S3_BUCKET` is skipped, so these jobs are unchanged for an
+instance that has only the local copy.
+
+Keep both. This one is fast, incremental and cheap to restore a single blob from; the
+offsite one is the copy that survives this machine. And the offsite job carries the
+`--full` workspace state — the roster, invites, publish tokens, comments, boards and
+pins — which `store-backup.mjs` above does **not**: it copies published content and
+nothing else.
