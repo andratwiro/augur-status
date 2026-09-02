@@ -100,6 +100,15 @@ PROBE_BLOB = b"augur uptime probe\n"   # constant on purpose: one object, foreve
 # teaches people to ignore it.
 CORE_PROBES = ("serving", "login", "publish", "publish-commit")
 
+# Neutral hosts, deliberately NOT on Cloudflare. If none of them answers, the box
+# itself has no route out — that is the homelab's outage, not Augur's, and it must
+# not page as "Augur is broken" for every lane of every target and then "recovered"
+# for every lane, all evening (30–31 Aug 2026: ~150 such alerts in two days, every
+# one of them "[Errno 101] Network is unreachable" while every other monitor on the
+# box timed out at the same minute). A Cloudflare outage still pages: these hosts
+# are reachable then, and the targets are not.
+CANARY_URLS = ("https://www.google.com/generate_204", "https://api.github.com/")
+
 # A failure alerts once and then stays quiet until it recovers, which is right for
 # an outage: somebody is already on it. It is wrong for a slow rot — an engine pin
 # that stopped moving is still wrong next Tuesday and nobody was reminded. These
@@ -280,6 +289,17 @@ def http_noredirect(method, url, *, headers=None, data=None):
         return r.status, r.read(), dict(r.headers), (time.time() - t0) * 1000
     except urllib.error.HTTPError as e:
         return e.code, e.read(), dict(e.headers), (time.time() - t0) * 1000
+
+
+def box_online():
+    """True if at least one neutral canary answers at all — any HTTP status counts."""
+    for u in CANARY_URLS:
+        try:
+            http("GET", u, timeout=10)
+            return True
+        except Exception:
+            continue
+    return False
 
 
 # ---------------------------------------------------------------- probes
@@ -593,6 +613,20 @@ def main():
     if "--test-alert" in sys.argv:
         notify("Augur probes: test alert. If you are reading this on your phone, the channel works.")
         print("sent")
+        return 0
+
+    if not box_online():
+        # Skip the run without touching the failure counters: a lane that was fine
+        # before the box lost its uplink is still fine, and one that was failing keeps
+        # its count for when the uplink returns. The dead-man file is still stamped
+        # so a skipped run and a dead prober stay distinguishable.
+        log("box offline — no canary host reachable; run skipped so a homelab outage "
+            "does not page as an Augur one")
+        if not REPORT:
+            os.makedirs(STATE_DIR, exist_ok=True)
+            with open(STATUS_FILE, "w") as fh:
+                json.dump({"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                           "skipped": "box offline", "components": {}, "targets": {}}, fh, indent=2)
         return 0
 
     commit_every = int(cfg("COMMIT_EVERY_MIN", "60") or 60)

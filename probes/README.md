@@ -41,7 +41,9 @@ rollback menu, up if the reverse.
 ## Alerting
 
 Two consecutive failures alert; a single blip is weather. Recovery sends its own
-message. Alerts go to Telegram — the channel the box already uses for machine
+message. A run in which no neutral canary host (none of them on Cloudflare) answers
+is skipped without touching the counters: the box has no uplink, which is the
+homelab's outage, not Augur's. Alerts go to Telegram — the channel the box already uses for machine
 alerts, so this needs nothing installed on the phone — and optionally to an ntfy
 topic as well.
 
