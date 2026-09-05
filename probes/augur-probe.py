@@ -77,12 +77,24 @@ import calendar
 import hashlib
 import json
 import os
+import socket
 import ssl
 import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+
+# IPv4 only. The box has no global IPv6 route, and urllib tries every address and
+# reports the LAST error — so every IPv4 failure surfaced as the IPv6 attempt's
+# "[Errno 101] Network is unreachable" and hid what had actually happened (seven
+# evenings of that message between 26 Aug and 5 Sep 2026, all of them IPv4 connect
+# timeouts). Falls through to whatever the resolver has if there is no A record.
+_getaddrinfo = socket.getaddrinfo
+def _v4_first(*a, **kw):
+    res = _getaddrinfo(*a, **kw)
+    return [r for r in res if r[0] == socket.AF_INET] or res
+socket.getaddrinfo = _v4_first
 
 CONF = os.environ.get("AUGUR_PROBE_CONF", "/etc/augur-probes.env")
 STATE_DIR = os.environ.get("AUGUR_PROBE_STATE", "/var/lib/augur-probes")
@@ -108,6 +120,37 @@ CORE_PROBES = ("serving", "login", "publish", "publish-commit")
 # box timed out at the same minute). A Cloudflare outage still pages: these hosts
 # are reachable then, and the targets are not.
 CANARY_URLS = ("https://www.google.com/generate_204", "https://api.github.com/")
+
+# The other way a box can be cut off: the canaries answer, and Cloudflare does not.
+# From a Spanish ISP that is a LaLiga IP block — court-ordered, per Cloudflare IP,
+# for the duration of a match (https://hayahora.futbol) — and very rarely Cloudflare
+# itself. Either way it is not Augur, and 26 Aug–5 Sep 2026 showed what paging it
+# as Augur looks like: seven evenings, 55 messages in one afternoon, every window a
+# kickoff. So a run in which at least PATH_MIN_TARGETS targets cannot even open a
+# TCP connection mutes those lanes (their counters untouched, like a skipped run),
+# pages ONCE for the episode after the usual two consecutive runs, and once when it
+# clears. A lane that connects and answers wrongly still pages as before — that is
+# the failure this probe exists for, and a block never looks like it.
+PATH_MIN_TARGETS = 2
+PATH_MARKERS = ("unreachable:", "URLError", "timed out", "TimeoutError", "Connection refused",
+                "Connection reset", "Network is unreachable", "No route to host")
+
+
+def is_path_failure(detail):
+    return any(m in (detail or "") for m in PATH_MARKERS)
+
+
+def tcp_open(origin, timeout=5):
+    """Can this box open a TCP connection to the origin at all? A raw connect, so a
+    worker that accepts and then hangs (a real outage) is told apart from an IP that
+    is dropped on the way (a block)."""
+    u = urllib.parse.urlsplit(origin)
+    try:
+        socket.create_connection((u.hostname, u.port or (443 if u.scheme == "https" else 80)),
+                                 timeout=timeout).close()
+        return True
+    except OSError:
+        return False
 
 # A failure alerts once and then stays quiet until it recovers, which is right for
 # an outage: somebody is already on it. It is wrong for a slow rot — an engine pin
@@ -654,6 +697,7 @@ def main():
         except Exception as e:
             return False, "probe crashed: %s: %s" % (type(e).__name__, e), None
 
+    collected = []
     for t in targets():
         checks = [("serving", safe(probe_serving, t)), ("login", safe(probe_login, t)),
                   ("publish", safe(probe_publish_fast, t))]
@@ -664,8 +708,40 @@ def main():
                        ("chrome-drift", safe(probe_chrome_drift, t)),
                        ("engine-stale", safe(probe_engine_stale, t)),
                        ("quota", safe(probe_quota, t))]
+        collected.append((t, checks))
+
+    # Cut off from Cloudflare, not from the internet? Only targets whose front door
+    # failed the network way are re-tested, with a raw connect, so the answer is
+    # about the path and not about what the worker said.
+    cut = [t["name"] for t, checks in collected
+           if any(p == "serving" and ok is False and is_path_failure(d) for p, (ok, d, _) in checks)
+           and not tcp_open(t["origin"])]
+    blocked = len(collected) >= PATH_MIN_TARGETS and len(cut) >= PATH_MIN_TARGETS
+    path = state.get("_path") or {"runs": 0, "alerted": False, "since": 0}
+    path_msgs = []
+    if blocked:
+        path["runs"] = path.get("runs", 0) + 1
+        path["since"] = path.get("since") or time.time()
+        if path["runs"] >= FAILS_BEFORE_ALERT and not path.get("alerted"):
+            path["alerted"] = True
+            path_msgs.append(
+                "Cloudflare is unreachable from the homelab — %d of %d targets, since %s UTC.\n\n"
+                "Not Augur. From here this is almost always a LaLiga IP block during a match "
+                "(https://hayahora.futbol), rarely Cloudflare itself. Those lanes are muted until "
+                "it clears; nothing to do."
+                % (len(cut), len(collected), time.strftime("%H:%M", time.gmtime(path["since"]))))
+    else:
+        if path.get("alerted"):
+            path_msgs.append("Cloudflare is reachable from the homelab again, after %d min. Probes resume."
+                             % round((time.time() - path["since"]) / 60))
+        path = {"runs": 0, "alerted": False, "since": 0}
+    state["_path"] = path
+
+    for t, checks in collected:
         results[t["name"]] = {}
         for probe, (ok, detail, ms) in checks:
+            if blocked and ok is False and is_path_failure(detail):
+                ok, detail = None, "muted — Cloudflare unreachable from the homelab, not counted: " + detail
             results[t["name"]][probe] = {
                 "ok": ok, "detail": detail, "ms": round(ms) if ms else None}
             if ok is None:
@@ -716,10 +792,13 @@ def main():
         "components": components,
         "targets": results,
     }
+    if blocked:
+        payload["path"] = {"cloudflare_unreachable": cut,
+                           "since": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(path["since"]))}
 
     if REPORT:
         print(json.dumps(payload, indent=2))
-        for p in problems:
+        for p in problems + path_msgs:
             print("WOULD ALERT:", p)
         return 0
 
@@ -732,10 +811,16 @@ def main():
     with open(STATE_FILE, "w") as fh:
         json.dump(state, fh)
 
+    if blocked:
+        log("PATH Cloudflare unreachable from here: %s (run %d, lanes muted)" % (", ".join(cut), path["runs"]))
     for line in problems:
         log("ALERT " + line)
     for line in recoveries:
         log("RECOVERED " + line)
+    for line in path_msgs:
+        log("PATH " + line.split("\n")[0])
+        if cfg("PATH_NOTIFY", "yes").lower() not in ("no", "0", "false", "off"):
+            notify(line)
     if problems:
         notify("Augur is broken:\n\n" + "\n".join(problems)
                + "\n\nSay so: bin/status set <component> outage \"...\"\n"
@@ -744,7 +829,8 @@ def main():
         notify("Augur recovered:\n\n" + "\n".join(recoveries))
 
     ok = all(r["ok"] is not False for probes in results.values() for r in probes.values())
-    log("run %s%s" % ("ok" if ok else "PROBLEMS", " (+commit lane)" if do_commit else ""))
+    log("run %s%s%s" % ("ok" if ok else "PROBLEMS", " (+commit lane)" if do_commit else "",
+                        " (Cloudflare blocked here, lanes muted)" if blocked else ""))
     return 0 if ok else 1
 
 

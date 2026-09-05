@@ -43,7 +43,22 @@ rollback menu, up if the reverse.
 Two consecutive failures alert; a single blip is weather. Recovery sends its own
 message. A run in which no neutral canary host (none of them on Cloudflare) answers
 is skipped without touching the counters: the box has no uplink, which is the
-homelab's outage, not Augur's. Alerts go to Telegram — the channel the box already uses for machine
+homelab's outage, not Augur's.
+
+The other way the box gets cut off is Cloudflare alone: the canaries answer and no
+target does. From a Spanish ISP that is a **LaLiga IP block** — court-ordered, per
+Cloudflare IP, for the length of a match (<https://hayahora.futbol>) — and it hit
+seven evenings between 26 Aug and 5 Sep 2026, every window a kickoff, 55 messages
+in one afternoon. So when two or more targets cannot even open a TCP connection
+(a raw connect, retried after the probe fails, so a worker that accepts and hangs
+is still an outage), those lanes are **muted** with their counters untouched, and
+the episode pages **once** after the usual two runs and once when it clears. A
+lane that connects and answers wrongly still pages as before. `PATH_NOTIFY=no`
+in the env keeps even those two messages to the log. The probe also pins itself
+to IPv4: the box has no IPv6 route, and Python reports the last address's error,
+which turned every IPv4 timeout into a misleading "Network is unreachable".
+
+Alerts go to Telegram — the channel the box already uses for machine
 alerts, so this needs nothing installed on the phone — and optionally to an ntfy
 topic as well.
 
@@ -60,7 +75,9 @@ $EDITOR /etc/augur-probes.env          # hostnames, tokens, Telegram
 /opt/augur-probes/augur-probe.py --test-alert   # prove the phone works
 
 crontab -e
-*/3 * * * * /opt/augur-probes/augur-probe.py >> /var/lib/augur-probes/cron.log 2>&1
+# flock: a run that waits out timeouts must not overlap the next one — two runs
+# writing the same state file sent duplicate pages 15 s apart.
+*/3 * * * * flock -n /var/lib/augur-probes/.lock /opt/augur-probes/augur-probe.py >> /var/lib/augur-probes/cron.log 2>&1
 ```
 
 `--report` deliberately skips the commit lane, because it is a dry run and that
