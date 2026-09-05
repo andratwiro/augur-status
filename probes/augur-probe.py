@@ -79,6 +79,7 @@ import json
 import os
 import socket
 import ssl
+import subprocess
 import sys
 import time
 import urllib.error
@@ -138,6 +139,52 @@ PATH_MARKERS = ("unreachable:", "URLError", "timed out", "TimeoutError", "Connec
 
 def is_path_failure(detail):
     return any(m in (detail or "") for m in PATH_MARKERS)
+
+
+# Before saying anything about a run like that, ask a vantage outside Spain and
+# outside Cloudflare: a GitHub Actions runner, dispatched on demand (the workflow is
+# outside-check.yml in OUTSIDE_REPO; the origins it checks are that repo's
+# OUTSIDE_ORIGINS secret, so no hostname sits in a public repo). Fine from there
+# means the box is blind and the episode stays in the log. Failing from there too
+# is real, and pages. Asked once per episode and again every OUTSIDE_RECHECK_MIN,
+# so a block that turns into an outage is still caught. OUTSIDE_REPO= disables it,
+# and the episode pages once as "unreachable from the homelab" instead.
+OUTSIDE_RECHECK_MIN = 30
+
+
+def outside_sees_fine():
+    """True: every origin answers from outside. False: at least one fails from outside
+    too. None: could not ask (no gh, no repo, runner never came back)."""
+    repo = cfg("OUTSIDE_REPO", "andratwiro/augur-status")
+    if not repo:
+        return None
+    cmd = ["gh", "workflow", "run", "outside-check.yml", "-R", repo]
+    if cfg("OUTSIDE_ORIGINS"):                       # tests only, never a real hostname
+        cmd += ["-f", "origins=" + cfg("OUTSIDE_ORIGINS")]
+    t0 = time.time()
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, timeout=30)
+    except Exception as e:
+        log("outside check: could not dispatch — %s" % e)
+        return None
+    since = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t0 - 15))
+    while time.time() - t0 < 150:
+        time.sleep(10)
+        try:
+            out = subprocess.run(["gh", "run", "list", "-R", repo, "--workflow", "outside-check.yml",
+                                  "--limit", "5", "--json", "status,conclusion,createdAt"],
+                                 check=True, capture_output=True, timeout=30).stdout
+            runs = [r for r in json.loads(out) if r.get("createdAt", "") >= since]
+        except Exception as e:
+            log("outside check: could not list runs — %s" % e)
+            return None
+        done = [r for r in runs if r.get("status") == "completed"]
+        if done:
+            c = done[0].get("conclusion")
+            log("outside check: %s" % c)
+            return c == "success" if c in ("success", "failure") else None
+    log("outside check: runner did not answer in time")
+    return None
 
 
 def tcp_open(origin, timeout=5):
@@ -722,18 +769,38 @@ def main():
     if blocked:
         path["runs"] = path.get("runs", 0) + 1
         path["since"] = path.get("since") or time.time()
-        if path["runs"] >= FAILS_BEFORE_ALERT and not path.get("alerted"):
-            path["alerted"] = True
-            path_msgs.append(
-                "Cloudflare is unreachable from the homelab — %d of %d targets, since %s UTC.\n\n"
-                "Not Augur. From here this is almost always a LaLiga IP block during a match "
-                "(https://hayahora.futbol), rarely Cloudflare itself. Those lanes are muted until "
-                "it clears; nothing to do."
-                % (len(cut), len(collected), time.strftime("%H:%M", time.gmtime(path["since"]))))
+        since_hm = time.strftime("%H:%M", time.gmtime(path["since"]))
+        recheck_due = (time.time() - path.get("asked_at", 0)) >= OUTSIDE_RECHECK_MIN * 60
+        if path["runs"] >= FAILS_BEFORE_ALERT and not path.get("alerted") and recheck_due and not REPORT:
+            path["asked_at"] = time.time()
+            outside = outside_sees_fine()
+            if outside is True:
+                # Blind, not broken. Nobody needs a phone to buzz for that.
+                path["verdict"] = "blocked-here"
+            elif outside is False:
+                path["alerted"] = True
+                path["verdict"] = "down-outside"
+                path_msgs.append(
+                    "Augur is unreachable from OUTSIDE as well (GitHub runner), not just from the "
+                    "homelab — %d of %d targets, since %s UTC. This one is real: Cloudflare, or the "
+                    "worker.\n\nSay so: bin/status set serving outage \"...\"\n"
+                    "https://andratwiro.github.io/augur-status/" % (len(cut), len(collected), since_hm))
+            else:
+                path["alerted"] = True
+                path["verdict"] = "unknown"
+                path_msgs.append(
+                    "Cloudflare is unreachable from the homelab — %d of %d targets, since %s UTC — "
+                    "and the outside check could not run.\n\nFrom here this is almost always a "
+                    "LaLiga IP block during a match (https://hayahora.futbol), rarely Cloudflare "
+                    "itself. Those lanes are muted until it clears."
+                    % (len(cut), len(collected), since_hm))
     else:
         if path.get("alerted"):
-            path_msgs.append("Cloudflare is reachable from the homelab again, after %d min. Probes resume."
+            path_msgs.append("Reachable again after %d min. Probes resume."
                              % round((time.time() - path["since"]) / 60))
+        elif path.get("since"):
+            log("PATH episode over after %d min, verdict %s, nobody paged"
+                % (round((time.time() - path["since"]) / 60), path.get("verdict", "short")))
         path = {"runs": 0, "alerted": False, "since": 0}
     state["_path"] = path
 
@@ -793,7 +860,7 @@ def main():
         "targets": results,
     }
     if blocked:
-        payload["path"] = {"cloudflare_unreachable": cut,
+        payload["path"] = {"cloudflare_unreachable": cut, "verdict": path.get("verdict", "pending"),
                            "since": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(path["since"]))}
 
     if REPORT:

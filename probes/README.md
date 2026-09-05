@@ -52,11 +52,20 @@ seven evenings between 26 Aug and 5 Sep 2026, every window a kickoff, 55 message
 in one afternoon. So when two or more targets cannot even open a TCP connection
 (a raw connect, retried after the probe fails, so a worker that accepts and hangs
 is still an outage), those lanes are **muted** with their counters untouched, and
-the episode pages **once** after the usual two runs and once when it clears. A
-lane that connects and answers wrongly still pages as before. `PATH_NOTIFY=no`
-in the env keeps even those two messages to the log. The probe also pins itself
-to IPv4: the box has no IPv6 route, and Python reports the last address's error,
-which turned every IPv4 timeout into a misleading "Network is unreachable".
+before saying anything the probe **asks a vantage outside Spain and outside
+Cloudflare**: it dispatches `.github/workflows/outside-check.yml` with `gh` and
+waits for the runner (about 30 s). Fine from there means the box is blind, not
+Augur broken, and the episode stays in the log — nobody is paged. Failing from
+there too is real and pages once, with a recovery line when it clears. The
+runner re-checks every 30 minutes of a continuing episode, so a block that turns
+into an outage is still caught. The origins it checks are the repo's
+`OUTSIDE_ORIGINS` secret (set from the box: the env's target origins, comma-
+separated), so no hostname sits in this public repo and the run log shows only
+an index and a status code. `OUTSIDE_REPO=` disables the ask, and the episode
+then pages once as "unreachable from the homelab"; `PATH_NOTIFY=no` keeps even
+that to the log. The probe also pins itself to IPv4: the box has no IPv6 route,
+and Python reports the last address's error, which turned every IPv4 timeout
+into a misleading "Network is unreachable".
 
 Alerts go to Telegram — the channel the box already uses for machine
 alerts, so this needs nothing installed on the phone — and optionally to an ntfy
