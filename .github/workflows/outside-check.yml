@@ -1,0 +1,36 @@
+# Asked, not scheduled. The homelab probe dispatches this when it finds Cloudflare
+# unreachable from the box while the neutral canaries answer — which from a Spanish
+# ISP is a LaLiga IP block during a match, not an outage. A runner sits outside
+# both Spain and Cloudflare, so its answer settles it: fine from here means the
+# probe is blind and says nothing; failing from here too is real and pages.
+#
+# The origins live in the OUTSIDE_ORIGINS secret (comma-separated), never in this
+# public repo, and the log prints only an index and a status code. The `origins`
+# input exists for tests and must never carry a real hostname.
+name: Outside check
+on:
+  workflow_dispatch:
+    inputs:
+      origins:
+        description: "TEST ONLY — comma-separated origins overriding the secret"
+        required: false
+        default: ""
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: GET / on every origin
+        env:
+          ORIGINS: ${{ inputs.origins != '' && inputs.origins || secrets.OUTSIDE_ORIGINS }}
+        run: |
+          set +e
+          test -n "$ORIGINS" || { echo "no origins: set the OUTSIDE_ORIGINS secret"; exit 2; }
+          bad=0; i=0
+          IFS=, ; for o in $ORIGINS; do
+            i=$((i+1))
+            code=$(curl -4 -sS -o /dev/null -m 20 -w '%{http_code}' -A 'augur-outside-check/1' "$o/" 2>/dev/null)
+            case "$code" in 2*|3*) echo "$i: $code";; *) echo "$i: FAIL ($code)"; bad=$((bad+1));; esac
+          done
+          echo "checked $i, failing $bad"
+          test "$bad" -eq 0
