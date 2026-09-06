@@ -236,6 +236,55 @@ def cfg(key, default=""):
     return CONF_D.get(key, default)
 
 
+# ---------------------------------------------------------------- vantage
+#
+# The homelab sits on a Spanish ISP, and under LaLiga's court order Spanish ISPs drop
+# Cloudflare IPs for the length of every match (https://hayahora.futbol). Detecting
+# that after the fact (the PATH lane below) only works when the cut is total; on
+# 6 Sep 2026 it was partial — one target timing out while the others answered — and
+# 38 pages got through in one Sunday afternoon. So the probe can instead LOOK from
+# somewhere the block does not reach: PROBE_PROXY names a local SOCKS5 proxy, in
+# practice Cloudflare WARP in proxy mode (`warp-cli mode proxy`, free, port 40000),
+# and every request this process makes rides through it. Traffic to a Cloudflare-
+# hosted target then travels inside Cloudflare's own network, so the ISP's IP block
+# never sees it. Only this process is routed; the box keeps its own path.
+#
+# If the proxy is configured but not answering, the run probes direct and says so in
+# the log and in status.json — a dead WARP must not turn into "every instance is
+# down". Needs python3-socks (PySocks) for the SOCKS handshake; without it, same.
+PROXY = cfg("PROBE_PROXY", "")
+VANTAGE = "direct"
+_vantage_note = None
+
+
+def _proxy_answers(host, port):
+    try:
+        socket.create_connection((host, port), timeout=2).close()
+        return True
+    except OSError:
+        return False
+
+
+if PROXY:
+    _pu = urllib.parse.urlsplit(PROXY)
+    if _pu.scheme not in ("socks5", "socks5h") or not _pu.hostname or not _pu.port:
+        _vantage_note = "PROBE_PROXY must look like socks5h://host:port, got %r; probing direct" % PROXY
+    else:
+        try:
+            import socks  # python3-socks
+        except ImportError:
+            socks = None
+            _vantage_note = "PROBE_PROXY set but python3-socks is not installed; probing direct"
+        if socks is not None:
+            if _proxy_answers(_pu.hostname, _pu.port):
+                socks.set_default_proxy(socks.SOCKS5, _pu.hostname, _pu.port,
+                                        rdns=(_pu.scheme == "socks5h"))
+                socket.socket = socks.socksocket
+                VANTAGE = "proxy"
+            else:
+                _vantage_note = "PROBE_PROXY %s is not answering; probing direct" % PROXY
+
+
 def targets():
     out = []
     for name in [t.strip() for t in cfg("TARGETS", "").split(",") if t.strip()]:
@@ -700,6 +749,9 @@ def main():
     except Exception:
         pass
 
+    if _vantage_note:
+        log("VANTAGE " + _vantage_note)
+
     if "--test-alert" in sys.argv:
         notify("Augur probes: test alert. If you are reading this on your phone, the channel works.")
         print("sent")
@@ -858,6 +910,7 @@ def main():
         "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "components": components,
         "targets": results,
+        "vantage": VANTAGE,
     }
     if blocked:
         payload["path"] = {"cloudflare_unreachable": cut, "verdict": path.get("verdict", "pending"),

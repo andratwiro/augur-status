@@ -92,6 +92,30 @@ crontab -e
 `--report` deliberately skips the commit lane, because it is a dry run and that
 is the one probe that writes. Force it with `--commit`.
 
+## Looking from outside the ISP
+
+The box is on a Spanish ISP, and Spanish ISPs drop Cloudflare IPs for the length
+of every LaLiga match (court-ordered; live tracker at <https://hayahora.futbol>).
+From here that is indistinguishable from an outage, and when the cut is partial the
+PATH mute below cannot see it. So the probe looks from somewhere the block does not
+reach: Cloudflare WARP in **proxy mode**, a free client that opens a local SOCKS5
+port and routes only what is pointed at it. Traffic to a Cloudflare-hosted target
+then travels inside Cloudflare's network and the ISP never sees a blocked IP.
+
+```sh
+curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor -o /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
+sudo apt-get update && sudo apt-get install -y cloudflare-warp python3-socks
+warp-cli --accept-tos registration new
+warp-cli --accept-tos mode proxy && warp-cli --accept-tos proxy port 40000 && warp-cli --accept-tos connect
+curl --proxy socks5h://127.0.0.1:40000 https://www.cloudflare.com/cdn-cgi/trace   # warp=on
+```
+
+Then `PROBE_PROXY=socks5h://127.0.0.1:40000` in `/etc/augur-probes.env`. `status.json`
+carries `"vantage": "proxy"` while it is in use. If the port stops answering the run
+probes direct, logs `VANTAGE … probing direct`, and writes `"vantage": "direct"` — a
+dead WARP is a log line, never a page. Nothing else on the box is routed through it.
+
 ## Credentials it needs, and why they are the weak ones
 
 - **A viewer account.** Viewers sign in and can hold no publish token at all, so
