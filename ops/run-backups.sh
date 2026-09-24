@@ -2,7 +2,7 @@
 # run-backups.sh — the nightly Augur backup run, one instance at a time.
 #
 #   /opt/augur-backups/run-backups.sh              every configured instance
-#   /opt/augur-backups/run-backups.sh go-vocal     just that one
+#   /opt/augur-backups/run-backups.sh orbit-cedar-450  just that one
 #   /opt/augur-backups/run-backups.sh --check      read everything, write nothing
 #
 # One .env per instance in /etc/augur-backups.d/ (mode 600), so adding an instance
