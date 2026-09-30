@@ -56,18 +56,12 @@ stamp() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 say()   { echo "$(stamp) $*"; }
 
 notify() {
-  local text="$1" tok chat
-  # Read ONLY the two variables needed, rather than sourcing a file full of other
-  # instances' credentials into this shell.
-  tok="$(sed -n 's/^TG_BOT_TOKEN=//p' "$PROBE_ENV" 2>/dev/null | tr -d '"'"'"' ' | head -1)"
-  chat="$(sed -n 's/^TG_CHAT_ID=//p' "$PROBE_ENV" 2>/dev/null | tr -d '"'"'"' ' | head -1)"
-  if [ -z "$tok" ] || [ -z "$chat" ]; then
-    say "NO ALERT CHANNEL — would have sent: $text"
-    return
-  fi
-  curl -sS --max-time 15 -o /dev/null \
-    --data-urlencode "chat_id=${chat}" --data-urlencode "text=${text}" \
-    "https://api.telegram.org/bot${tok}/sendMessage" || say "telegram send failed"
+  local text="$1"
+  # To the Augur on-call (it triages; Rob hears only if he must act). If the wake fails, a
+  # fixed line straight to Rob. Telegram was retired 30 Sep 2026.
+  printf '%s' "$text" | /usr/bin/python3 /opt/monitoring/alert.py route Augur augur-offsite >/dev/null && return
+  echo "augur-offsite couldn't wake the Augur on-call; see its log on the box." \
+    | /usr/bin/python3 /opt/monitoring/alert.py page Augur >/dev/null || say "alert.py route/page failed"
 }
 
 shopt -s nullglob

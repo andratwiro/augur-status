@@ -225,7 +225,7 @@ def load_conf(path):
     except FileNotFoundError:
         pass
     conf.update({k: v for k, v in os.environ.items()
-                 if k.startswith(("T_", "TG_", "NTFY_", "COMMIT_", "TARGETS"))})
+                 if k.startswith(("T_", "NTFY_", "COMMIT_", "TARGETS"))})
     return conf
 
 
@@ -346,20 +346,27 @@ def targets():
 
 # ---------------------------------------------------------------- alerting
 
+def _to_augur(source, text):
+    """Wake the Augur überclanker (it triages and tells Rob only if he must act). If the wake
+    fails, a fixed line straight to Rob: never this text, which can carry strangers' words.
+    Telegram was retired 30 Sep 2026; /opt/monitoring/alert.py is the box's one way out."""
+    import subprocess
+    alert = ["/usr/bin/python3", "/opt/monitoring/alert.py"]
+    try:
+        if subprocess.run(alert + ["route", "Augur", source], input=text, text=True,
+                          capture_output=True, timeout=90).returncode == 0:
+            return True
+        return subprocess.run(alert + ["page", "Augur"], text=True, capture_output=True, timeout=90,
+                              input="%s couldn't wake the Augur on-call; see its log on the box." % source).returncode == 0
+    except Exception:
+        return False
+
+
 def notify(text):
-    """Phone. Telegram is the channel the box already uses; ntfy is optional."""
-    sent = False
-    tok, chat = cfg("TG_BOT_TOKEN"), cfg("TG_CHAT_ID")
-    if tok and chat:
-        body = urllib.parse.urlencode({"chat_id": chat, "text": text}).encode()
-        try:
-            urllib.request.urlopen(
-                urllib.request.Request("https://api.telegram.org/bot%s/sendMessage" % tok,
-                                       data=body, headers={"User-Agent": UA}),
-                timeout=15)
-            sent = True
-        except Exception as e:
-            log("telegram send failed: %s" % e)
+    """To the Augur on-call (see _to_augur); ntfy stays optional."""
+    sent = _to_augur("augur-probe", text)
+    if not sent:
+        log("alert.py route/page failed")
     ntfy = cfg("NTFY_URL")
     if ntfy:
         try:

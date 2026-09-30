@@ -25,7 +25,7 @@
 #
 # ── ALERTING ────────────────────────────────────────────────────────────────────
 #
-# The same Telegram channel the uptime probes use, read from /etc/augur-probes.env,
+# The same channel the uptime probes use (alert.py → the Augur on-call; was Telegram until 30 Sep 2026),
 # because a second alert channel is a second thing to keep alive. A failed run
 # alerts every night until it succeeds: unlike an outage, nobody is already
 # looking at a backup that silently stopped — that is precisely the failure mode
@@ -60,18 +60,12 @@ stamp() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 say()   { echo "$(stamp) $*"; }
 
 notify() {
-  local text="$1" tok="" chat=""
-  # Read ONLY the two variables we need, rather than sourcing a file full of
-  # other instances' credentials into this shell.
-  tok="$(sed -n 's/^TG_BOT_TOKEN=//p' "$PROBE_ENV" 2>/dev/null | tr -d '"'"'"' ' | head -1)"
-  chat="$(sed -n 's/^TG_CHAT_ID=//p' "$PROBE_ENV" 2>/dev/null | tr -d '"'"'"' ' | head -1)"
-  if [ -z "$tok" ] || [ -z "$chat" ]; then
-    say "NO ALERT CHANNEL — would have sent: $text"
-    return
-  fi
-  curl -sS --max-time 15 -o /dev/null \
-    --data-urlencode "chat_id=${chat}" --data-urlencode "text=${text}" \
-    "https://api.telegram.org/bot${tok}/sendMessage" || say "telegram send failed"
+  local text="$1"
+  # To the Augur on-call (it triages; Rob hears only if he must act). If the wake fails, a
+  # fixed line straight to Rob. Telegram was retired 30 Sep 2026.
+  printf '%s' "$text" | /usr/bin/python3 /opt/monitoring/alert.py route Augur augur-backup >/dev/null && return
+  echo "augur-backup couldn't wake the Augur on-call; see its log on the box." \
+    | /usr/bin/python3 /opt/monitoring/alert.py page Augur >/dev/null || say "alert.py route/page failed"
 }
 
 shopt -s nullglob

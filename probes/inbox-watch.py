@@ -56,26 +56,35 @@ def load_conf(path):
                     conf[k.strip()] = v.strip().strip('"').strip("'")
     except FileNotFoundError:
         pass
-    conf.update({k: v for k, v in os.environ.items() if k.startswith(("INBOX_", "TG_", "NTFY_"))})
+    conf.update({k: v for k, v in os.environ.items() if k.startswith(("INBOX_", "NTFY_"))})
     return conf
 
 
 C = load_conf(CONF)
 
 
+def _to_augur(source, text):
+    """Wake the Augur überclanker (it triages and tells Rob only if he must act). If the wake
+    fails, a fixed line straight to Rob: never this text, which can carry strangers' words.
+    Telegram was retired 30 Sep 2026; /opt/monitoring/alert.py is the box's one way out."""
+    import subprocess
+    alert = ["/usr/bin/python3", "/opt/monitoring/alert.py"]
+    try:
+        if subprocess.run(alert + ["route", "Augur", source], input=text, text=True,
+                          capture_output=True, timeout=90).returncode == 0:
+            return True
+        return subprocess.run(alert + ["page", "Augur"], text=True, capture_output=True, timeout=90,
+                              input="%s couldn't wake the Augur on-call; see its log on the box." % source).returncode == 0
+    except Exception:
+        return False
+
+
 def notify(text):
-    tok, chat = C.get("TG_BOT_TOKEN"), C.get("TG_CHAT_ID")
     if REPORT:
         print("WOULD SEND:", text)
         return
-    if tok and chat:
-        try:
-            urllib.request.urlopen(urllib.request.Request(
-                "https://api.telegram.org/bot%s/sendMessage" % tok,
-                data=urllib.parse.urlencode({"chat_id": chat, "text": text}).encode(),
-                headers={"User-Agent": UA}), timeout=15)
-        except Exception as e:
-            print("telegram send failed: %s" % e)
+    if not _to_augur("augur-inbox", text):
+        print("alert.py route/page failed")
     if C.get("NTFY_URL"):
         try:
             urllib.request.urlopen(urllib.request.Request(
